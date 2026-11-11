@@ -1,0 +1,66 @@
+{
+  "name": "pdf-annotator",
+  "displayName": "PDF Annotator",
+  "description": "Read and annotate PDFs inside VS Code with highlights, underlines, notes, and comments saved directly to the PDF.",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#182330",
+    "theme": "dark"
+  },
+  "keywords": [
+    "pdf",
+    "annotation",
+    "highlight",
+    "underline",
+    "notes",
+    "zotero",
+    "research"
+  ],
+  "version": "0.1.10",
+  "publisher": "HugoHamon",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "pdfAnnotator.editor",
+        "displayName": "PDF Annotator",
+        "selector": [
+          {
+            "filenamePattern": "*.pdf"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
+    "commands": [
+      {
+        "command": "pdfAnnotator.exportNotes",
+        "title": "PDF Annotator: Export Notes and Quotes"
+      }
+    ]
+  },
+  "scripts": {
+    "copy-assets": "node scripts/copy-assets.js",
+    "typecheck": "tsc --noEmit",
+    "compile": "npm run copy-assets && esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node18 --sourcemap",
+    "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node18 --sourcemap --watch",
+    "package": "npm run typecheck && npm run compile && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "1.85.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.21.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "3.11.174",
+    "typescript": "^5.4.0"
+  }
+}
