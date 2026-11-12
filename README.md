@@ -50,6 +50,10 @@ npm run compile
 npm run package
 ```
 
+## Future stuff
+
+- **Links:** enable linking to other pages or external URLs. For internal links, support jumping to a page and highlighting a passage (e.g., for citations or equations in academic papers).
+
 ## License
 
 MIT. See the `LICENSE` file in the project repository.
