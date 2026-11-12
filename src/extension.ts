@@ -131,6 +131,16 @@ class PdfAnnotatorProvider implements vscode.CustomEditorProvider<PdfDocument> {
           if (a && !a.text && typeof u.text === 'string') a.text = u.text;
         }
         break;
+      case 'openLink': {
+        if (typeof msg.url !== 'string') return;
+        try {
+          const uri = vscode.Uri.parse(msg.url, true);
+          if (['https', 'http', 'mailto'].includes(uri.scheme.toLowerCase())) {
+            void vscode.env.openExternal(uri).then(undefined, () => { /* Opening failed. */ });
+          }
+        } catch { /* Ignore malformed or unsupported PDF links. */ }
+        return;
+      }
       case 'export':
         void this.exportNotes(doc);
         break;
@@ -309,6 +319,17 @@ class PdfAnnotatorProvider implements vscode.CustomEditorProvider<PdfDocument> {
       <span id="zoomLabel">100 %</span>
       <button id="zoomIn" title="Zoom in">+</button>
       <button id="fit" title="Fit to width">Fit</button>
+    </div>
+    <div id="searchBar" role="search" hidden>
+      <input id="searchInput" type="search" placeholder="Find in document" aria-label="Find in document">
+      <button id="searchPrev" title="Previous match (Shift+Enter)" aria-label="Previous match">‹</button>
+      <button id="searchNext" title="Next match (Enter)" aria-label="Next match">›</button>
+      <span id="searchCount" role="status" aria-live="polite"></span>
+      <label><input id="searchAll" type="checkbox" checked> Highlight all</label>
+      <label><input id="searchCase" type="checkbox"> Match case</label>
+      <label><input id="searchAccents" type="checkbox"> Match accents and diacritics</label>
+      <label><input id="searchWords" type="checkbox"> Whole words</label>
+      <button id="searchClose" title="Close search (Escape)" aria-label="Close search">×</button>
     </div>
     <div id="main">
       <div id="viewer"><div id="pages"></div></div>

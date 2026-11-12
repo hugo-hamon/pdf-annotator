@@ -22,6 +22,7 @@ Right-click a PDF and select **Open With... → PDF Annotator**. To use it for a
 
 | Action | How to use it |
 | --- | --- |
+| Search PDF text | `Ctrl+F` (`Cmd+F` on macOS); Enter / Shift+Enter moves between matches, Escape closes search. Options: highlight all, match case, match accents and diacritics, and whole words. |
 | Highlight text | Select a passage, then click a color in the contextual palette, or press `H` |
 | Underline text | Select a passage and click **Underline**, or press `U` |
 | Add a note | Click **Note** in the toolbar (or press `N`), then click on the page |
@@ -49,10 +50,6 @@ npm run typecheck
 npm run compile
 npm run package
 ```
-
-## Future stuff
-
-- **Links:** enable linking to other pages or external URLs. For internal links, support jumping to a page and highlighting a passage (e.g., for citations or equations in academic papers).
 
 ## License
 

@@ -102,6 +102,7 @@
     const start = performance.now();
     const timing = (phase) => vscode.postMessage({ type: 'performance', phase, elapsed: performance.now() - start });
     const id = ++loadId;
+    resetSearch();
     clearTimeout(zoomTimer);
     zoomTimer = null;
     if (zoomFrame !== null) cancelAnimationFrame(zoomFrame);
@@ -168,11 +169,11 @@
       const div = document.createElement('div');
       div.className = 'page';
       div.dataset.index = String(i - 1);
-      div.innerHTML = '<canvas></canvas><div class="hl-layer"></div><div class="textLayer"></div><div class="note-layer"></div>';
+      div.innerHTML = '<canvas></canvas><div class="hl-layer"></div><div class="textLayer"></div><div class="note-layer"></div><div class="link-layer"></div>';
       pagesEl.appendChild(div);
       const p = {
         index: i - 1, page, div, token: 0, rendered: false, task: null, viewport: null,
-        canvas: div.children[0], hl: div.children[1], text: div.children[2], notes: div.children[3],
+        canvas: div.children[0], hl: div.children[1], text: div.children[2], notes: div.children[3], links: div.children[4], linkData: [],
       };
       pages.push(p);
       sizePage(p);
@@ -188,6 +189,7 @@
     drawAll();
     updatePageInfo();
     fillQuotes();
+    if (!searchBar.hidden && searchInput.value) runSearch();
   }
 
   function fitScale(page) {
@@ -303,19 +305,80 @@
       p.canvas = nextCanvas;
       p.paintedWidth = vp.width;
       p.task = null;
+      const links = await p.page.getAnnotations({ intent: 'display' });
+      if (token !== p.token) return;
+      p.linkData = links.filter((a) => a.subtype === 'Link' && (a.url || a.dest));
+      drawLinks(p);
       const content = await p.page.getTextContent();
       if (token !== p.token) return;
       // Prepare the selectable text layer before replacing the previous one.
       const nextText = document.createElement('div');
       nextText.className = 'textLayer';
-      const textTask = pdfjsLib.renderTextLayer({ textContentSource: content, container: nextText, viewport: vp, textDivs: [] });
+      const textDivs = [];
+      const textTask = pdfjsLib.renderTextLayer({ textContentSource: content, container: nextText, viewport: vp, textDivs });
       await textTask.promise;
       if (token !== p.token) return;
       p.text.replaceChildren(...nextText.childNodes);
       p.text.style.transform = '';
+      p.searchSpans = textDivs;
+      drawSearch(p);
     } catch (err) {
       if (!err || err.name !== 'RenderingCancelledException') console.error(err);
       if (token === p.token) p.rendered = false;
+    }
+  }
+
+  // PDF destinations use PDF coordinates; viewport conversion handles rotation and zoom.
+  function drawLinks(p) {
+    p.links.replaceChildren();
+    for (const link of p.linkData) {
+      const [x1, y1, x2, y2] = p.viewport.convertToViewportRectangle(link.rect);
+      const button = document.createElement('button');
+      button.className = 'pdf-link';
+      button.title = link.url || 'Jump to linked passage';
+      button.setAttribute('aria-label', button.title);
+      button.style.cssText = `left:${Math.min(x1,x2)}px;top:${Math.min(y1,y2)}px;width:${Math.abs(x2-x1)}px;height:${Math.abs(y2-y1)}px`;
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (link.url) vscode.postMessage({ type: 'openLink', url: link.url });
+        else void followDestination(link.dest);
+      });
+      p.links.appendChild(button);
+    }
+  }
+
+  let navigationId = 0;
+  async function followDestination(destination) {
+    const doc = pdfDoc;
+    const request = ++navigationId;
+    try {
+      const dest = typeof destination === 'string' ? await doc.getDestination(destination) : destination;
+      if (!Array.isArray(dest) || dest.length < 2) return;
+      const index = Number.isInteger(dest[0]) ? dest[0] : await doc.getPageIndex(dest[0]);
+      if (doc !== pdfDoc || request !== navigationId) return;
+      const p = pages[index];
+      if (!p) return;
+      const kind = dest[1]?.name;
+      const [left, bottom, right, top] = p.page.view;
+      let rect;
+      if (kind === 'FitR' && dest.slice(2,6).every(Number.isFinite)) rect = dest.slice(2,6);
+      else {
+        const x = kind === 'XYZ' && Number.isFinite(dest[2]) ? dest[2] : left;
+        const y = kind === 'XYZ' ? dest[3] : ['FitH', 'FitBH'].includes(kind) ? dest[2] : top;
+        const targetY = Number.isFinite(y) ? y : top;
+        rect = [x, Math.max(bottom, targetY - 24), right, targetY];
+      }
+      const [x1,y1,x2,y2] = p.viewport.convertToViewportRectangle(rect);
+      document.querySelectorAll('.link-target').forEach((el) => el.remove());
+      const marker = document.createElement('div');
+      marker.className = 'link-target';
+      marker.style.cssText = `left:${Math.min(x1,x2)}px;top:${Math.min(y1,y2)}px;width:${Math.max(4,Math.abs(x2-x1))}px;height:${Math.max(4,Math.abs(y2-y1))}px`;
+      p.div.appendChild(marker);
+      marker.scrollIntoView({ block: 'center', inline: 'nearest' });
+      setTimeout(() => marker.remove(), 3000);
+      void renderPage(p);
+    } catch (error) {
+      console.warn('Could not follow PDF destination', error);
     }
   }
 
@@ -330,6 +393,8 @@
       p.task = null;
     }
     p.rendered = false;
+    p.div.querySelector('.search-layer')?.remove();
+    p.searchSpans = null;
     if (!keepPreview) {
       p.canvas.width = 0;
       p.canvas.height = 0;
@@ -391,6 +456,7 @@
       byPage.get(a.page).push(a);
     }
     pages.forEach((p) => drawOverlay(p, byPage.get(p.index) || []));
+    pages.forEach(drawLinks);
     markSelection();
   }
 
@@ -726,6 +792,142 @@
     }
   }
 
+  // Search the complete document, including pages not currently rendered.
+  const searchBar = $('#searchBar');
+  const searchInput = $('#searchInput');
+  let searchVersion = 0, searchTimer, searchMatches = [], searchCurrent = -1;
+  let searchIndex = new Map();
+  function resetSearch() {
+    ++searchVersion;
+    clearTimeout(searchTimer);
+    searchMatches = [];
+    searchCurrent = -1;
+    searchIndex = new Map();
+    $('#searchCount').textContent = '';
+  }
+  function closeSearch() {
+    searchBar.hidden = true;
+    resetSearch();
+    pages.forEach(drawSearch);
+    viewerEl.tabIndex = -1;
+    viewerEl.focus();
+  }
+  function normalizeSearch(text) {
+    let result = '', offsets = [];
+    let offset = 0;
+    for (const char of text) {
+      let value = char.normalize('NFD');
+      if (!$('#searchAccents').checked) value = value.replace(/\p{M}/gu, '');
+      if (!$('#searchCase').checked) value = value.toLowerCase();
+      for (let i = 0; i < value.length; i++) offsets.push([offset, offset + char.length]);
+      result += value;
+      offset += char.length;
+    }
+    return { text: result, offsets };
+  }
+  async function runSearch() {
+    clearTimeout(searchTimer);
+    const version = ++searchVersion, doc = pdfDoc;
+    searchMatches = []; searchCurrent = -1;
+    pages.forEach(drawSearch);
+    const query = normalizeSearch(searchInput.value).text;
+    if (!query || !doc) { $('#searchCount').textContent = ''; return; }
+    $('#searchCount').textContent = 'Searching…';
+    try {
+      const matches = [];
+      for (let page = 0; page < doc.numPages; page++) {
+        let entry = searchIndex.get(page);
+        if (!entry) {
+          const content = await (await doc.getPage(page + 1)).getTextContent();
+          if (version !== searchVersion) return;
+          let text = ''; const runs = [];
+          for (const item of content.items) {
+            if (typeof item.str !== 'string') continue;
+            runs.push({ start: text.length, length: item.str.length });
+            text += item.str;
+            if (item.hasEOL) text += ' ';
+          }
+          entry = { text, runs }; searchIndex.set(page, entry);
+        }
+        const normalized = normalizeSearch(entry.text);
+        let from = 0, found;
+        while ((found = normalized.text.indexOf(query, from)) !== -1) {
+          const end = found + query.length;
+          const before = Array.from(normalized.text.slice(0, found)).pop() || '';
+          const after = Array.from(normalized.text.slice(end))[0] || '';
+          if (!$('#searchWords').checked || (!/[\p{L}\p{N}\p{M}_]/u.test(before) && !/[\p{L}\p{N}\p{M}_]/u.test(after))) {
+            matches.push({ page, start: normalized.offsets[found][0], end: normalized.offsets[end - 1][1] });
+          }
+          from = end;
+        }
+      }
+      if (version !== searchVersion) return;
+      searchMatches = matches;
+      moveSearch(1);
+    } catch (error) {
+      if (version === searchVersion) $('#searchCount').textContent = 'Search unavailable';
+      console.warn('PDF search failed', error);
+    }
+  }
+  function drawSearch(p) {
+    p.div.querySelector('.search-layer')?.remove();
+    const entry = searchIndex.get(p.index);
+    if (searchBar.hidden || !entry || !p.searchSpans) return;
+    const layer = document.createElement('div'); layer.className = 'search-layer';
+    const box = p.div.getBoundingClientRect();
+    searchMatches.forEach((match, index) => {
+      if (match.page !== p.index || (!$('#searchAll').checked && index !== searchCurrent)) return;
+      entry.runs.forEach((run, i) => {
+        const start = Math.max(match.start, run.start) - run.start;
+        const end = Math.min(match.end, run.start + run.length) - run.start;
+        const node = p.searchSpans[i]?.firstChild;
+        if (end <= start || !node || node.nodeType !== Node.TEXT_NODE) return;
+        const range = document.createRange();
+        range.setStart(node, start); range.setEnd(node, end);
+        for (const rect of range.getClientRects()) {
+          const mark = document.createElement('div');
+          mark.className = 'search-hit' + (index === searchCurrent ? ' current' : '');
+          mark.style.cssText = `left:${rect.left-box.left}px;top:${rect.top-box.top}px;width:${rect.width}px;height:${rect.height}px`;
+          layer.appendChild(mark);
+        }
+      });
+    });
+    p.div.appendChild(layer);
+    if (p.searchNavigation === searchVersion + ':' + searchCurrent) {
+      layer.querySelector('.current')?.scrollIntoView({ block: 'center', inline: 'nearest' });
+      p.searchNavigation = null;
+    }
+  }
+  async function moveSearch(direction) {
+    const count = searchMatches.length;
+    $('#searchPrev').disabled = $('#searchNext').disabled = !count;
+    if (!count) { $('#searchCount').textContent = 'No matches'; return; }
+    searchCurrent = (searchCurrent + direction + count) % count;
+    $('#searchCount').textContent = `${searchCurrent + 1} of ${count}`;
+    const p = pages[searchMatches[searchCurrent].page];
+    if (!p) return;
+    const version = searchVersion, current = searchCurrent;
+    p.searchNavigation = version + ':' + current;
+    p.div.scrollIntoView({ block: 'start' });
+    await renderPage(p);
+    if (version !== searchVersion || current !== searchCurrent) return;
+    pages.forEach(drawSearch);
+    p.div.querySelector('.search-hit.current')?.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }
+  searchInput.addEventListener('input', () => {
+    ++searchVersion;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(runSearch, 180);
+  });
+  searchInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); moveSearch(event.shiftKey ? -1 : 1); }
+  });
+  $('#searchPrev').addEventListener('click', () => moveSearch(-1));
+  $('#searchNext').addEventListener('click', () => moveSearch(1));
+  $('#searchClose').addEventListener('click', closeSearch);
+  $('#searchAll').addEventListener('change', () => pages.forEach(drawSearch));
+  for (const id of ['searchCase', 'searchAccents', 'searchWords']) $('#' + id).addEventListener('change', runSearch);
+
   // ---------------------------------------------------------- keyboard and messages
 
   window.addEventListener(
@@ -733,7 +935,16 @@
     (e) => {
       // Flush pending comments before VS Code handles the save shortcut.
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') flush();
-      if (e.target.tagName === 'TEXTAREA' || e.ctrlKey || e.metaKey || e.altKey) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        searchBar.hidden = false;
+        searchInput.focus();
+        searchInput.select();
+        if (searchInput.value) runSearch();
+        return;
+      }
+      if (e.key === 'Escape' && !searchBar.hidden) { closeSearch(); return; }
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.ctrlKey || e.metaKey || e.altKey) return;
       switch (e.key) {
         case 'v': setTool('select'); break;
         case 'h': applySelection('highlight'); break;
